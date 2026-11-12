@@ -41,6 +41,7 @@ constexpr int32_t VIDEODEC2_ERROR_OVERSIZE_DECODE      = -2128805118; // 0x811d0
 
 constexpr uint32_t VIDEODEC2_RESOURCE_TYPE_COMPUTE = 1;
 constexpr uint32_t VIDEODEC2_CODEC_TYPE_AVC        = 1;
+constexpr uint32_t VIDEODEC2_CODEC_TYPE_HEVC       = 974921;
 constexpr uint32_t VIDEODEC2_CODEC_TYPE_VP9        = 2382845;
 constexpr size_t   VIDEODEC2_MIN_MEMORY_SIZE       = 16ull * 1024ull * 1024ull;
 constexpr uint32_t VIDEODEC2_FRAME_FORMAT_DEFAULT  = 0;
@@ -305,14 +306,25 @@ static int32_t KYTY_SYSV_ABI ReleaseComputeQueue(Videodec2ComputeQueue compute_q
 }
 
 static size_t FrameBufferSize(const Videodec2DecoderConfigInfo& config) {
-	if (config.codec_type != VIDEODEC2_CODEC_TYPE_AVC || config.max_frame_width <= 0 ||
-	    config.max_frame_height <= 0) {
+	if ((config.codec_type != VIDEODEC2_CODEC_TYPE_AVC &&
+	     config.codec_type != VIDEODEC2_CODEC_TYPE_HEVC &&
+	     config.codec_type != VIDEODEC2_CODEC_TYPE_VP9) ||
+	    config.max_frame_width < 0 || config.max_frame_height < 0) {
 		return VIDEODEC2_MIN_MEMORY_SIZE;
 	}
-	// AVC output: 256-byte pitch, 16-line maximum height, and 4096 bytes of metadata.
-	const auto pitch  = (static_cast<size_t>(config.max_frame_width) + 255u) & ~size_t {255};
-	const auto height = (static_cast<size_t>(config.max_frame_height) + 15u) & ~size_t {15};
-	return pitch * height * 3 / 2 + 4096;
+
+	const bool vp9 = config.codec_type == VIDEODEC2_CODEC_TYPE_VP9;
+	const bool ten_bit =
+	    (config.codec_type == VIDEODEC2_CODEC_TYPE_HEVC || vp9) && config.profile == 2;
+	const auto row_alignment = vp9 ? 64u : 16u;
+	const auto pitch  = (static_cast<uint64_t>(config.max_frame_width) + 255u) & ~uint64_t {255};
+	const auto height = (static_cast<uint64_t>(config.max_frame_height) + row_alignment - 1u) &
+	                    ~(static_cast<uint64_t>(row_alignment) - 1u);
+	const auto pixels = pitch * height * 3u / 2u * (ten_bit ? 2u : 1u);
+
+	// Size NV12 output frames separately from decoder working memory. A fixed 16 MiB
+	// per frame prevents games with bounded movie pools from queuing enough frames.
+	return static_cast<size_t>(pixels + (vp9 ? 8192u : 4096u));
 }
 
 static int32_t KYTY_SYSV_ABI QueryDecoderMemoryInfo(const Videodec2DecoderConfigInfo* config,
